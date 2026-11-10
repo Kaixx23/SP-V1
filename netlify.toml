@@ -1,0 +1,27 @@
+# SP-V1 — Netlify deployment. Same shape as the hub's, on purpose: the two sites
+# read one token store and must behave identically everywhere a customer looks.
+#
+#   NODE_VERSION 20          — the code uses modern fetch/Response globals.
+#   external_node_modules    — @libsql/client ships a native binding esbuild
+#                              cannot bundle; Netlify keeps it a runtime require.
+[build]
+  functions = "netlify/functions"
+  environment = { NODE_VERSION = "20" }
+
+[functions]
+  node_bundler = "esbuild"
+  external_node_modules = ["@libsql/client", "libsql"]
+
+# CACHING — read this before touching it. Netlify's [[headers]] rules never apply
+# to a function response, and function responses here are cached by PATH with the
+# query string stripped. On the hub-compatible routes (/all/SP VPN?t=<token>) the
+# token is in the query, so one cache entry would be shared by every customer on
+# the site. That is why the worker itself sends `Cache-Control: no-store` on every
+# response, and why `/e/<token>` (token in the PATH) is the recommended link form
+# here: a per-customer path cannot be served to the wrong person even if a cache
+# rule is ever added. The hub measured a byte-identical /diag body six minutes
+# apart; a stale profile is invisible until someone's VPN breaks.
+[[redirects]]
+  from = "/*"
+  to = "/.netlify/functions/index"
+  status = 200
