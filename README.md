@@ -118,14 +118,16 @@ that combination is hard to ship by accident.
 ## Tests
 
 ```
-npm test          # 181 checks, no dev dependencies, no network
+npm test          # 249 checks: 181 + 68. No dev dependencies, no network.
 ```
 
-`test/exact.test.mjs` runs the worker against a stubbed panel and hub, on a fixture
-deliberately hostile to a helpful proxy — UTF-8 BOM, CRLF endings, flow-style YAML,
-a Chinese group name, a full-width colon inside a node name, commas inside quoted
-rules — and asserts **`Buffer.compare(served, fixture) === 0`**. That one comparison
-is the product claim. Around it:
+Two suites, because they prove different things.
+
+**`test/exact.test.mjs` (181 checks)** runs `worker.fetch` against a stubbed panel
+and hub, on a fixture deliberately hostile to a helpful proxy — UTF-8 BOM, CRLF
+endings, flow-style YAML, a Chinese group name, a full-width colon inside a node
+name, commas inside quoted rules — and asserts **`Buffer.compare(served, fixture)
+=== 0`**. That one comparison is the product claim. Around it:
 
 - **§1–4** pure logic: the YAML-variant URL is built idempotently and never
   overwrites a `type=` from the row; the client-negotiation table is the hub's
@@ -154,6 +156,24 @@ is the product claim. Around it:
   failure visible), `/diag`, `/admin/verify` passing **and** failing on a tampered
   response, plus a sweep proving no response body this run produced contains the
   panel token or the supplier URL.
+
+**`test/live-http.test.mjs` (68 checks)** cannot be replaced by the first suite: it
+starts three real loopback servers (a panel, a hub, and the app behind the same
+`fetch(request, env, ctx)` contract the Netlify wrapper uses) and makes a customer's
+request over actual HTTP. That is what catches the layer around the worker — the
+`Request` built from a socket, header case, a real client parsing our response, a
+panel that is a real server. It checks the sha256 of what the panel wrote against the
+sha256 of what the client received, byte 0 of the BOM and the last two bytes of the
+trailing CRLF, that a list client is never redirected to the YAML endpoint, and the
+three cache behaviours:
+
+* fresh cache → served with **zero** upstream fetches, so a stampede of refreshing
+  apps cannot pile onto a struggling panel;
+* aged cache (`ageCaches()`, the test/ops hook that exists so this path is
+  exercisable without waiting five minutes) + both hops down → the last good
+  document, with `X-SPVPN-Stale` and `X-SPVPN-Fallback: stale-cache-both-hops-failed`;
+* cold cache + both hops down → an honest 503 naming each hop, never a "supplier
+  issue" for a rate limit.
 
 ## Support playbook
 

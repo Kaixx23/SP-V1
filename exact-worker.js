@@ -223,6 +223,18 @@ export function resetCaches() {
 }
 export const cacheState = () => ({ entries: _cache.size, stale_served: _staleServed, ttl_s: TTL / 1000, stale_max_h: STALE_MAX_MS / 3600000 });
 
+/**
+ * Push every cached document past the freshness TTL (but not past the 24 h
+ * stale ceiling), so the "upstream is down, serve what we have" path can be
+ * exercised without waiting five minutes. Test and ops tooling only — production
+ * never calls it, and it cannot invent a profile that was not already served.
+ */
+export function ageCaches(seconds = TTL / 1000 + 1) {
+  const back = seconds * 1000;
+  for (const e of _cache.values()) e.t -= back;
+  return _cache.size;
+}
+
 function once(key, fn) {
   const inflight = _flight.get(key);
   if (inflight) return inflight;
@@ -696,9 +708,14 @@ async function verify(request, env, hubBase, tok, url) {
   // the headers and the mode negotiation are all in the loop. `&v=` is the owner's
   // cache-buster, because function responses here are cached by path.
   const bust = url.searchParams.get("v") ? "&v=" + encodeURIComponent(url.searchParams.get("v")) : "";
+  // Same protocol as the incoming request, not a hardcoded https: production is
+  // https and behaves identically, but a local run (node bin/serve.mjs) and any
+  // future http-only preview can then be verified the same way. A check that only
+  // works against production is a check that never gets run.
+  const selfBase = `${url.protocol}//${url.host}`;
   const selfUrl = kind === "yaml"
-    ? `https://${url.host}/all/SP%20VPN?fmt=yaml&t=${encodeURIComponent(tok)}${bust}`
-    : `https://${url.host}/share/${encodeURIComponent(tok)}${bust ? bust.replace("&", "?") : ""}`;
+    ? `${selfBase}/all/SP%20VPN?fmt=yaml&t=${encodeURIComponent(tok)}${bust}`
+    : `${selfBase}/share/${encodeURIComponent(tok)}${bust ? bust.replace("&", "?") : ""}`;
   const [ours, theirs] = await Promise.all([
     grab(selfUrl, FETCH_BUDGET_MS, request),
     grab(target, FETCH_BUDGET_MS, request),
@@ -722,12 +739,17 @@ async function verify(request, env, hubBase, tok, url) {
     },
     nodes: { served: countNames(new TextDecoder().decode(a)), supplier: countNames(new TextDecoder().decode(b)) },
     served_mode: (ours.headers && ours.headers.get("x-spvpn-mode")) || null,
+    // A failed self-fetch is not a difference — it means the check itself could
+    // not run. Saying so beats reporting 0 bytes against the supplier's 940.
+    served_fetch: { ok: ours.ok, status: ours.status || 0, error: ours.error ? scrub(null, ours.error) : null },
     supplier_host: new URL(supplierUrl).host,
     verdict: identical
       ? "✅ byte-identical to the supplier's own response for this client — same file, so the same nodes, the same pings, the same rules"
-      : (theirs.ok
-        ? "⚠️ served bytes differ from the supplier's. Check served_mode: a safe-mode fallback is a rebuilt profile and WILL differ — that is what the fallback is for."
-        : "⚠️ the supplier fetch failed, so nothing could be compared"),
+      : (!ours.ok
+        ? "⚠️ could not fetch our own public URL (" + (ours.error || "HTTP " + ours.status) + "), so nothing was compared — the check did not run"
+        : (theirs.ok
+          ? "⚠️ served bytes differ from the supplier's. Check served_mode: a safe-mode fallback is a rebuilt profile and WILL differ — that is what the fallback is for."
+          : "⚠️ the supplier fetch failed, so nothing could be compared")),
     note: "Two independent fetches of the same subscription, compared byte by byte. VPN traffic never passes through either converter; this only proves the file is not altered.",
   };
   if (!identical && firstDiff >= 0) {

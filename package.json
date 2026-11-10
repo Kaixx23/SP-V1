@@ -5,7 +5,7 @@
   "type": "module",
   "description": "SP-V1 — byte-exact passthrough in front of a subscription panel, with the hub's rebuilt profile as the fallback.",
   "scripts": {
-    "test": "node test/exact.test.mjs",
+    "test": "node test/exact.test.mjs && node test/live-http.test.mjs",
     "verify": "node bin/verify-live.mjs",
     "dev": "node bin/serve.mjs"
   },
